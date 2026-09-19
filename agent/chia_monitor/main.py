@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Response
 
 from .collector import collect
 from .baseline import FarmBaseline
@@ -73,7 +73,12 @@ def create_app(settings: Settings, baseline: FarmBaseline | None = None) -> Fast
     async def healthz(): return {"ok": True}
 
     @app.get("/api/widget", dependencies=[Depends(authorize)])
-    async def widget():
+    async def widget(response: Response):
+        # The widget endpoint is a live heartbeat. It must never be satisfied
+        # by an HTTP cache after the miner or agent has gone offline.
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
         d = state.data
         farm = d.get("farm", {})
         disks = d.get("disks", [])

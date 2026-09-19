@@ -5,7 +5,9 @@ const SETTINGS_URL = "chia-monitor-agent-url";
 const SETTINGS_TOKEN = "chia-monitor-api-token";
 const ALERT_FINGERPRINT = "chia-monitor-alert-fingerprint";
 const CACHE_FILE = "chia-monitor-widget-cache.json";
-const STALE_AFTER_MINUTES = 30;
+// The agent refreshes every 30 seconds. A response older than two minutes is
+// not a live miner status, even if the HTTP request itself succeeded.
+const STALE_AFTER_SECONDS = 120;
 
 const palette = {
   background: "#07130C",
@@ -62,10 +64,23 @@ async function showMessage(title, message) {
 }
 
 async function requestData(url, token) {
-  const request = new Request(`${url}/api/widget`);
-  request.headers = { Authorization: `Bearer ${token}`, Accept: "application/json" };
+  // Scriptable may otherwise reuse a cached GET after the miner disappears.
+  const request = new Request(`${url}/api/widget?_=${Date.now()}`);
+  request.cachePolicy = "reloadIgnoringLocalCacheData";
+  request.headers = {
+    Authorization: `Bearer ${token}`,
+    Accept: "application/json",
+    "Cache-Control": "no-cache, no-store, max-age=0",
+  };
   request.timeoutInterval = 10;
-  return request.loadJSON();
+  const data = await request.loadJSON();
+  if (request.response?.statusCode !== 200) {
+    throw new Error(`Monitor returned HTTP ${request.response?.statusCode || "error"}`);
+  }
+  if (isOld(data?.updated_at)) {
+    throw new Error("Monitor heartbeat is stale");
+  }
+  return data;
 }
 
 function cachePath() {
@@ -100,7 +115,7 @@ async function loadFarm() {
 
 function isOld(timestamp) {
   const time = timestamp ? new Date(timestamp).getTime() : 0;
-  return !time || Date.now() - time > STALE_AFTER_MINUTES * 60 * 1000;
+  return !time || !Number.isFinite(time) || Date.now() - time > STALE_AFTER_SECONDS * 1000;
 }
 
 function duration(seconds) {
@@ -269,16 +284,18 @@ function buildHomeWidget(data, stale, family) {
   const widget = baseWidget(info);
   const missing = metricValue(data, ["missing_signage_points", "farming.missing_signage_points"]);
   const partials = metricValue(data, ["stale_partials", "pool.stale_partials", "farming.stale_partials"]);
-  const filterHealthy = Boolean(data?.farmer && data?.synced && Number(data?.failed_plots ?? 0) === 0);
-  const harvestersHealthy = data?.harvesters?.online === data?.harvesters?.total;
-  const disksHealthy = data?.disks?.online === data?.disks?.total;
+  const farmerHealthy = !stale && Boolean(data?.farmer);
+  const nodeHealthy = !stale && Boolean(data?.synced);
+  const filterHealthy = farmerHealthy && nodeHealthy && Number(data?.failed_plots ?? 0) === 0;
+  const harvestersHealthy = !stale && data?.harvesters?.total > 0 && data?.harvesters?.online === data?.harvesters?.total;
+  const disksHealthy = !stale && data?.disks?.total > 0 && data?.disks?.online === data?.disks?.total;
 
   widget.addSpacer(family === "large" ? 11 : 7);
   const sync = widget.addStack();
   const compact = family === "small";
-  addHealthPill(sync, data?.synced ? (compact ? "Node" : "Node synced") : "Node syncing", Boolean(data?.synced));
+  addHealthPill(sync, stale ? "Node stale" : data?.synced ? (compact ? "Node" : "Node synced") : "Node syncing", nodeHealthy);
   sync.addSpacer(compact ? 4 : 6);
-  addHealthPill(sync, data?.farmer ? (compact ? "Farmer" : "Farmer synced") : "Farmer offline", Boolean(data?.farmer));
+  addHealthPill(sync, stale ? "Farmer offline" : data?.farmer ? (compact ? "Farmer" : "Farmer online") : "Farmer offline", farmerHealthy);
 
   if (family === "small") {
     widget.addSpacer(8);
@@ -383,7 +400,7 @@ function buildAccessory(data, stale, family) {
     const text = widget.addText(`Chia ${info.label} · ${dailyXch(data?.estimated_daily_xch)} XCH/day`);
     text.font = Font.mediumSystemFont(12);
   } else if (family === "accessoryCircular") {
-    const text = widget.addText(data?.farmer && data?.synced ? "✓" : "!");
+    const text = widget.addText(!stale && data?.farmer && data?.synced ? "✓" : "!");
     text.font = Font.boldRoundedSystemFont(24);
     text.centerAlignText();
   } else {

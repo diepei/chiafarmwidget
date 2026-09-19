@@ -23,6 +23,8 @@ def test_farm_data_requires_token():
     response = client.get("/api/widget", headers={"Authorization": f"Bearer {'a' * 32}"})
     assert response.status_code == 200
     payload = response.json()
+    assert response.headers["cache-control"] == "no-store, no-cache, must-revalidate, max-age=0"
+    assert response.headers["pragma"] == "no-cache"
     assert set(("status", "plots", "alerts", "estimated_daily_xch", "last_block_at")) <= payload.keys()
     assert "score" not in payload
     assert "balance_xch" not in payload
